@@ -52,9 +52,13 @@ int main() {
   }
 
   int tgt_lane = 1;     //0 - closest to yellow line, 2 farthest from yellow line
-  double tgt_vel = 49;  //MPH
+  double vel = 0;  //MPH
+  double max_vel = 49.5;
+  double tgt_vel = max_vel;
+  double max_acc = 0.224;
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,
+  h.onMessage([&tgt_lane, &vel, &tgt_vel, &max_vel, &max_acc,
+               &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,
                &map_waypoints_dx,&map_waypoints_dy]
               (uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                uWS::OpCode opCode) {
@@ -84,7 +88,6 @@ int main() {
           // Previous path data given to the Planner
           auto previous_path_x = j[1]["previous_path_x"];
           auto previous_path_y = j[1]["previous_path_y"];
-          int prev_path_size = previous_path_x.size();
 
           // Previous path's end s and d values 
           double end_path_s = j[1]["end_path_s"];
@@ -92,26 +95,127 @@ int main() {
 
           // Sensor Fusion Data, a list of all other cars on the same side 
           //   of the road.
-          auto sensor_fusion = j[1]["sensor_fusion"];
+          vector<vector<double>> sensor_fusion = j[1]["sensor_fusion"];
 
           json msgJson;
-
-          vector<double> next_x_vals;
-          vector<double> next_y_vals;
 
           /**
            * TODO: define a path made up of (x,y) points that the car will visit
            *   sequentially every .02 seconds
            */
+          int prev_size = previous_path_x.size();
+
+          if (prev_size > 0) {
+            car_s = end_path_s;
+          }
+
+          bool car_ahead = false;
+          bool car_left = false;
+          bool car_right = false;
+          double car_left_ahead = -1;
+          double car_right_ahead = -1;
+
+
+          //Behavior Control
+          for (int i = 0; i < sensor_fusion.size(); i++) {
+
+            double veh_x = sensor_fusion[i][3];
+            double veh_y = sensor_fusion[i][4];
+            double vehicle_vel = sqrt(veh_x * veh_x + veh_y * veh_y);
+
+            double veh_s = sensor_fusion[i][5];
+            double veh_d = sensor_fusion[i][6];
+            veh_s += (double)prev_size * 0.02 * vehicle_vel;
+
+            if ( veh_s >= car_s && (veh_s - car_s) <= 30 && veh_d > (4 * tgt_lane) && veh_d < (4 + 4 * tgt_lane) ) {
+              car_ahead = true;
+              tgt_vel = vehicle_vel;
+            }
+
+            if ( (veh_s - car_s) >= -10 &&
+                 (veh_s - car_s) <= 20 &&
+                 veh_d >= (4 * (tgt_lane - 1)) &&
+                 veh_d <= (4 + 4 * (tgt_lane - 1)) && veh_d > 0) {
+              car_left = true;
+            }
+
+            if ( (veh_s - car_s) >= -10 &&
+                 (veh_s - car_s) <= 20 &&
+                 veh_d >= (4 * (tgt_lane + 1)) &&
+                 veh_d <= (4 + 4 * (tgt_lane + 1)) && veh_d > 0) {
+              car_right = true;
+            }
+
+            if ( (veh_s - car_s) > 20 &&
+                 (veh_s - car_s) <= 50 &&
+                 veh_d >= (4 * (tgt_lane - 1)) &&
+                 veh_d <= (4 + 4 * (tgt_lane - 1)) && veh_d > 0) {
+              car_left_ahead = vehicle_vel;
+            } else {
+              car_left_ahead = -1;
+            }
+
+            if ( (veh_s - car_s) > 20 &&
+                 (veh_s - car_s) <= 50 &&
+                 veh_d >= (4 * (tgt_lane + 1)) &&
+                 veh_d <= (4 + 4 * (tgt_lane + 1)) && veh_d > 0) {
+              car_right_ahead = vehicle_vel;
+            } else {
+              car_right_ahead = -1;
+            }
+
+          }
+
+          if (car_ahead) {
+            if (!car_left && tgt_lane != 0) {
+              if (car_left_ahead == -1) {
+                tgt_vel = max_vel;
+              } else {
+                tgt_vel = car_left_ahead;
+              }
+              tgt_lane -= 1;
+              
+            } else if (!car_right && tgt_lane != 2) {
+              if (car_right_ahead == -1) {
+                tgt_vel = max_vel;
+              } else {
+                tgt_vel = car_right_ahead;
+              }
+              tgt_lane += 1;
+            }
+          } else {
+            if (tgt_lane != 1) {
+              if ( (tgt_lane == 0 && !car_right) || (tgt_lane == 2 && !car_left)) {
+                tgt_lane = 1;
+              }
+            }
+            tgt_vel = max_vel;
+          }
+
+          //std::cout <<  " ahead: " << car_ahead << " lane: " << tgt_lane << std::endl;
+
+          //Speed Control
+          if (vel <= (tgt_vel - max_acc / 2)) {
+            vel += max_acc;
+          } else if (vel >= (tgt_vel + max_acc / 2)) {
+            vel -= max_acc;
+          } else {
+            vel = tgt_vel;
+          }
+
+          //Failsafe
+          if (vel > max_vel) {
+            vel = max_vel;
+          }
 
           vector<double> x_points;
           vector<double> y_points;
 
-          double pos_x = car_x;
-          double pos_y = car_y;
-          double pos_t = deg2rad(car_yaw);
+          double ref_x = car_x;
+          double ref_y = car_y;
+          double ref_yaw = deg2rad(car_yaw);
 
-          if (prev_path_size < 2) {
+          if (prev_size < 2) {
             x_points.push_back(car_x - cos(deg2rad(car_yaw)));
             y_points.push_back(car_y - sin(deg2rad(car_yaw)));
 
@@ -119,68 +223,79 @@ int main() {
             y_points.push_back(car_y);
 
           } else {
-            pos_x = previous_path_x[prev_path_size - 1];
-            pos_y = previous_path_y[prev_path_size - 1];
+            ref_x = previous_path_x[prev_size - 1];
+            ref_y = previous_path_y[prev_size - 1];
 
-            double prev_x = previous_path_x[prev_path_size - 2];
-            double prev_y = previous_path_y[prev_path_size - 2];
+            double ref_x_prev = previous_path_x[prev_size - 2];
+            double ref_y_prev = previous_path_y[prev_size - 2];
 
-            pos_t = atan2(pos_y - prev_y, pos_x - prev_x);
+            ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
 
-            x_points.push_back(prev_X);
-            y_points.push_back(prev_y);
+            x_points.push_back(ref_x_prev);
+            y_points.push_back(ref_y_prev);
 
-            x_points.push_back(pos_x);
-            x_points.push_back(pos_y);
+            x_points.push_back(ref_x);
+            y_points.push_back(ref_y);
           }
 
-          int increment = 30;
-          int wp_ahead = 3;
-          int l_m = 2 + 4 * tgt_lane;
+          vector<double> next_wp0 = getXY(car_s + 30, (2 + 4 * tgt_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp1 = getXY(car_s + 60, (2 + 4 * tgt_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp2 = getXY(car_s + 90, (2 + 4 * tgt_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
 
-          vector<double> wp;
+          x_points.push_back(next_wp0[0]);
+          x_points.push_back(next_wp1[0]);
+          x_points.push_back(next_wp2[0]);
 
-          for (int i = 0; i < wp_ahead; i++) {
-            wp = getXY(car_s + increment * (i + 1), l_m, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-            x_points.push_back(wp[0]);
-            y_points.push_back(wp[1]);
-          }
+          y_points.push_back(next_wp0[1]);
+          y_points.push_back(next_wp1[1]);
+          y_points.push_back(next_wp2[1]);
 
           for (int i = 0; i < x_points.size(); i++) {
-            double s_x = x_points[i] - pos_x;
-            double s_y = y_points[i] - pos_y;
+            double shift_x = x_points[i] - ref_x;
+            double shift_y = y_points[i] - ref_y;
 
-            x_points[i] = s_x * cos(0 - pos_t) - s_y * sin(0 - pos_t);
-            x_points[i] = s_x * sin(0 - pos_t) + s_y * cos(0 - pos_t);
+            x_points[i] = shift_x * cos(0 - ref_yaw) - shift_y * sin(0 - ref_yaw);
+            y_points[i] = shift_x * sin(0 - ref_yaw) + shift_y * cos(0 - ref_yaw);
           }
 
           tk::spline s;
 
           s.set_points(x_points, y_points);
 
+          vector<double> next_x_vals;
+          vector<double> next_y_vals;
+
           for (int i = 0; i < previous_path_x.size(); i++) {
             next_x_vals.push_back(previous_path_x[i]);
             next_y_vals.push_back(previous_path_y[i]);
-          }
+          }          
 
-          double tgt_x = 30;
-          double tgt_y = s(tgt_x);
-          double tgt_d = dist(0, 0, tgt_x, tgt_y);
+          double target_x = 30;
+          double target_y = s(target_x);
+          double target_dist = sqrt(target_x * target_x + target_y * target_y);
 
-          double x_p = 0;
-          double y_p = 0;
+          double x_add_on = 0;
 
           int num_points = 50;
-          for (int i = 0; i < num_points - previous_path_x.size(); i++) {
-            double N = tgt_d / (0.02 * ref_vel / 2.24);
-            x_p += tgt_x / N;
-            y_p = s(x_p);
 
-            x_p = x_p * cos(pos_t) - y_p * sin(pos_t);
-            y_p = x_p * sin(pos_t) + y_p * cos(pos_t);
+          for (int i = 0; i <= num_points - previous_path_x.size(); i++) {
+            double N = target_dist / (0.02 * vel / 2.24);
+            double x_point = x_add_on + target_x / N;
+            double y_point = s(x_point);
 
-            next_x_vals.push_back(x_p);
-            next_y_vals.push_back(y_p);
+            x_add_on = x_point;
+
+            double x_ref = x_point;
+            double y_ref = y_point;
+
+            x_point = x_ref * cos(ref_yaw) - y_ref * sin(ref_yaw);
+            y_point = x_ref * sin(ref_yaw) + y_ref * cos(ref_yaw);
+
+            x_point += ref_x;
+            y_point += ref_y;
+
+            next_x_vals.push_back(x_point);
+            next_y_vals.push_back(y_point);
           }
 	  
           //END TODO
