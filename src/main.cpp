@@ -109,9 +109,12 @@ int main() {
             car_s = end_path_s;
           }
 
+          //Test if we need to pass, and which side
           bool car_ahead = false;
           bool car_left = false;
           bool car_right = false;
+
+          //Speed of car ahead, for merging behind a car
           double car_left_ahead = -1;
           double car_right_ahead = -1;
 
@@ -119,19 +122,25 @@ int main() {
           //Behavior Control
           for (int i = 0; i < sensor_fusion.size(); i++) {
 
+            //Define vehicle x and y velocity
             double veh_x = sensor_fusion[i][3];
             double veh_y = sensor_fusion[i][4];
+            //Vehicle velocity
             double vehicle_vel = sqrt(veh_x * veh_x + veh_y * veh_y);
 
+            //Vehicle position
             double veh_s = sensor_fusion[i][5];
             double veh_d = sensor_fusion[i][6];
             veh_s += (double)prev_size * 0.02 * vehicle_vel;
 
+            //Check if car is ahead of us in our lane
             if ( veh_s >= car_s && (veh_s - car_s) <= 30 && veh_d > (4 * tgt_lane) && veh_d < (4 + 4 * tgt_lane) ) {
               car_ahead = true;
+              //Slow down to match speed ahead
               tgt_vel = vehicle_vel;
             }
 
+            //Check if car is blocking us from changing lanes
             if ( (veh_s - car_s) >= -10 &&
                  (veh_s - car_s) <= 20 &&
                  veh_d >= (4 * (tgt_lane - 1)) &&
@@ -146,6 +155,7 @@ int main() {
               car_right = true;
             }
 
+            //Check if car is in position to merge behind it
             if ( (veh_s - car_s) > 20 &&
                  (veh_s - car_s) <= 50 &&
                  veh_d >= (4 * (tgt_lane - 1)) &&
@@ -166,16 +176,20 @@ int main() {
 
           }
 
+          //Check if we need to pass
           if (car_ahead) {
+            //Check if we can pass left
             if (!car_left && tgt_lane != 0) {
+              //Check if there is a car we can merge behind
               if (car_left_ahead == -1) {
                 tgt_vel = max_vel;
               } else {
                 tgt_vel = car_left_ahead;
               }
               tgt_lane -= 1;
-              
+              //Check if we can pass right
             } else if (!car_right && tgt_lane != 2) {
+              //Check to merge behind
               if (car_right_ahead == -1) {
                 tgt_vel = max_vel;
               } else {
@@ -183,7 +197,7 @@ int main() {
               }
               tgt_lane += 1;
             }
-          } else {
+          } else {    //Get in center lane if no car ahead of us
             if (tgt_lane != 1) {
               if ( (tgt_lane == 0 && !car_right) || (tgt_lane == 2 && !car_left)) {
                 tgt_lane = 1;
@@ -208,13 +222,16 @@ int main() {
             vel = max_vel;
           }
 
+
+          //Points for spline
+          //This code comes from the Q & A video
           vector<double> x_points;
           vector<double> y_points;
-
           double ref_x = car_x;
           double ref_y = car_y;
           double ref_yaw = deg2rad(car_yaw);
 
+          //Make points behind us when we start to create a smooth spline
           if (prev_size < 2) {
             x_points.push_back(car_x - cos(deg2rad(car_yaw)));
             y_points.push_back(car_y - sin(deg2rad(car_yaw)));
@@ -222,7 +239,7 @@ int main() {
             x_points.push_back(car_x);
             y_points.push_back(car_y);
 
-          } else {
+          } else { //Use previous points to smooth spline
             ref_x = previous_path_x[prev_size - 1];
             ref_y = previous_path_y[prev_size - 1];
 
@@ -238,6 +255,7 @@ int main() {
             y_points.push_back(ref_y);
           }
 
+          // Create spaced out waypoints where we want to go
           vector<double> next_wp0 = getXY(car_s + 30, (2 + 4 * tgt_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
           vector<double> next_wp1 = getXY(car_s + 60, (2 + 4 * tgt_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
           vector<double> next_wp2 = getXY(car_s + 90, (2 + 4 * tgt_lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
@@ -250,6 +268,7 @@ int main() {
           y_points.push_back(next_wp1[1]);
           y_points.push_back(next_wp2[1]);
 
+          //Shift into cars reference frame
           for (int i = 0; i < x_points.size(); i++) {
             double shift_x = x_points[i] - ref_x;
             double shift_y = y_points[i] - ref_y;
@@ -258,6 +277,7 @@ int main() {
             y_points[i] = shift_x * sin(0 - ref_yaw) + shift_y * cos(0 - ref_yaw);
           }
 
+          //create spline
           tk::spline s;
 
           s.set_points(x_points, y_points);
@@ -265,11 +285,14 @@ int main() {
           vector<double> next_x_vals;
           vector<double> next_y_vals;
 
+          //Populate next points with previous points so we dont have to recalculate everything everytime
+
           for (int i = 0; i < previous_path_x.size(); i++) {
             next_x_vals.push_back(previous_path_x[i]);
             next_y_vals.push_back(previous_path_y[i]);
           }          
 
+          //Beginning os speed calculations
           double target_x = 30;
           double target_y = s(target_x);
           double target_dist = sqrt(target_x * target_x + target_y * target_y);
@@ -278,7 +301,9 @@ int main() {
 
           int num_points = 50;
 
+          //Create new points at the end of the spline
           for (int i = 0; i <= num_points - previous_path_x.size(); i++) {
+            //Calculate how far apart to match speed
             double N = target_dist / (0.02 * vel / 2.24);
             double x_point = x_add_on + target_x / N;
             double y_point = s(x_point);
@@ -288,6 +313,7 @@ int main() {
             double x_ref = x_point;
             double y_ref = y_point;
 
+            //Back in global reference frame
             x_point = x_ref * cos(ref_yaw) - y_ref * sin(ref_yaw);
             y_point = x_ref * sin(ref_yaw) + y_ref * cos(ref_yaw);
 
